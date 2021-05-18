@@ -1,8 +1,8 @@
-/* $VER: vlink t_amigahunk.c V0.16c (31.01.19)
+/* $VER: vlink t_amigahunk.c V0.16h (16.01.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2019  Frank Wille
+ * Copyright (c) 1997-2021  Frank Wille
  */
 
 
@@ -13,9 +13,12 @@
 #include "amigahunks.h"
 
 
-static void init(struct GlobalVars *);
-static int ados_identify(char*,uint8_t *,unsigned long,bool);
-static int ehf_identify(char *,uint8_t *,unsigned long,bool);
+static void init(struct GlobalVars *,int);
+static int options(struct GlobalVars *,int,const char **,int *);
+static int ados_identify(struct GlobalVars *,char *,uint8_t *,
+                         unsigned long,bool);
+static int ehf_identify(struct GlobalVars *,char *,uint8_t *,
+                        unsigned long,bool);
 static int identify(char *,uint8_t *,unsigned long,bool);
 static void readconv(struct GlobalVars *,struct LinkFile *);
 static uint8_t cmpsecflags(struct LinkedSection *,struct Section *);
@@ -25,7 +28,7 @@ static struct Symbol *ados_lnksym(struct GlobalVars *,struct Section *,
                                   struct Reloc *);
 static void ados_setlnksym(struct GlobalVars *,struct Symbol *);
 static struct Symbol *ehf_findsymbol(struct GlobalVars *,
-                                     struct Section *,const char *);
+                                     struct Section *,const char *,uint32_t);
 static struct Symbol *ehf_lnksym(struct GlobalVars *,struct Section *,
                                   struct Reloc *);
 static void ehf_setlnksym(struct GlobalVars *,struct Symbol *);
@@ -40,6 +43,7 @@ struct FFFuncs fff_amigahunk = {
   NULL,
   NULL,
   init,
+  options,
   headersize,
   ados_identify,
   readconv,
@@ -59,7 +63,7 @@ struct FFFuncs fff_amigahunk = {
   0,
   RTAB_STANDARD,RTAB_STANDARD|RTAB_SHORTOFF,
   _BIG_ENDIAN_,
-  32,
+  32,1,
   FFF_RELOCATABLE
 };
 
@@ -68,6 +72,7 @@ struct FFFuncs fff_ehf = {
   NULL,
   NULL,
   init,
+  options,
   headersize,
   ehf_identify,
   readconv,
@@ -87,7 +92,7 @@ struct FFFuncs fff_ehf = {
   0,
   RTAB_STANDARD,RTAB_STANDARD|RTAB_SHORTOFF,
   _BIG_ENDIAN_,
-  32,
+  32,2,
   FFF_RELOCATABLE
 };
 
@@ -127,11 +132,30 @@ static int *rcnt,rrcnt;
 
 
 
-static void init(struct GlobalVars *gv)
+static void init(struct GlobalVars *gv,int mode)
 {
-  merged_hash = elf_hash(merged_name);
-  nomerge_hash = elf_hash(nomerge_name);
+  if (mode == FFINI_STARTUP) {
+    merged_hash = elf_hash(merged_name);
+    nomerge_hash = elf_hash(nomerge_name);
+  }
 }
+
+
+static int options(struct GlobalVars *gv,int argc,const char **argv,int *i)
+{
+  if (!strcmp(argv[*i],"-hunkattr")) {
+    struct SecAttrOvr *sao;
+    char secname[64];
+    lword val;
+
+    val = get_assign_arg(argc,argv,i,secname,64);
+    sao = addsecattrovr(gv,secname,SAO_MEMFLAGS);
+    sao->memflags = (uint32_t)val;
+    return 1;
+  }
+  return 0;
+}
+
 
 
 /*****************************************************************/
@@ -139,7 +163,8 @@ static void init(struct GlobalVars *gv)
 /*****************************************************************/
 
 
-static int ados_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int ados_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                         unsigned long plen,bool lib)
 {
   int ff;
 
@@ -149,7 +174,8 @@ static int ados_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
 }
 
 
-static int ehf_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int ehf_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                        unsigned long plen,bool lib)
 {
   int ff;
 
@@ -365,7 +391,7 @@ static void skipindex(struct HunkInfo *hi,uint32_t off)
 
 const char *readstrpool(struct HunkInfo *hi)
 {
-  return allocstring(hi->indexbase + 2 + readindex(hi));
+  return allocstring((char *)hi->indexbase + 2 + readindex(hi));
 }
 
 
@@ -439,7 +465,9 @@ static bool addlongrelocs(struct GlobalVars *gv,struct HunkInfo *hi,
       while (n--) {
         offs = nextword32(hi);
         r = newreloc(gv,s,NULL,NULL,id,offs,type,
-                     readsection(gv,type,s->data+offs,&ri));
+                     readsection(gv,type,s->data,offs,&ri));
+        if (type == R_SD)
+          r->addend &= makemask(size);  /* SD-addends must be unsigned! */
         addreloc_ri(s,r,&ri);
       }
     }
@@ -466,7 +494,7 @@ static bool addshortrelocs32(struct GlobalVars *gv,struct HunkInfo *hi,
       while (n--) {
         offs = (uint32_t)nextword16(hi);
         r = newreloc(gv,s,NULL,NULL,id,offs,R_ABS,
-                     readsection(gv,R_ABS,s->data+offs,&ri));
+                     readsection(gv,R_ABS,s->data,offs,&ri));
         addreloc_ri(s,r,&ri);
       }
     }
@@ -595,7 +623,7 @@ static void create_xrefs(struct GlobalVars *gv,struct HunkInfo *hi,
   while (n--) {
     offs = nextword32(hi);
     r = newreloc(gv,s,name,NULL,0,offs,rtype,
-                 readsection(gv,rtype,s->data+offs,&ri));
+                 readsection(gv,rtype,s->data,offs,&ri));
     addreloc_ri(s,r,&ri);
   }
 }
@@ -688,7 +716,7 @@ static void readconv(struct GlobalVars *gv,struct LinkFile *lf)
           /* prepare to parse the first unit from the index */
           hi.indexcnt = nextword32(&hi) << 2;
           hi.indexptr = hi.indexbase = hi.hunkptr;
-          hi.savedhunkcnt = hi.hunkcnt + hi.indexcnt;
+          hi.savedhunkcnt = hi.hunkcnt - hi.indexcnt;
           skipindex(&hi,readindex(&hi));
           indexhunk = TRUE;
           hunksleft = 0;
@@ -1199,8 +1227,9 @@ static void get_resident_sdrelocs(struct GlobalVars *gv)
             }
             else {  /* unsupported abs reloc in resident SD section */
               if (ri != NULL)
-                error(133,(lword)(r->offset+sec->offset),
-                      (int)ri->bpos,(int)ri->bsiz,(lword)ri->mask);
+                error(133,(unsigned long long)r->offset+sec->offset,
+                      (int)ri->bpos,(int)ri->bsiz,
+                      (unsigned long long)ri->mask);
               else
                 ierror("get_resident_sdrelocs(): missing rel reloc info");
             }
@@ -1238,8 +1267,9 @@ static void get_resident_sdrelocs(struct GlobalVars *gv)
               }
               else {  /* unsupported abs reloc in resident SD section */
                 if (ri != NULL)
-                  error(133,(lword)(r->offset+sec->offset),
-                        (int)ri->bpos,(int)ri->bsiz,(lword)ri->mask);
+                  error(133,(unsigned long long)r->offset+sec->offset,
+                        (int)ri->bpos,(int)ri->bsiz,
+                        (unsigned long long)ri->mask);
                 else
                   ierror("get_resident_sdrelocs(): missing xref reloc info");
               }
@@ -1329,36 +1359,62 @@ static void ados_setlnksym(struct GlobalVars *gv,struct Symbol *xdef)
 }
 
 
-static struct Symbol *ehf_findsymbol(struct GlobalVars *gv,
-                                     struct Section *sec,const char *name)
+static struct Symbol *ehf_findsymbol(struct GlobalVars *gv,struct Section *sec,
+                                     const char *name,uint32_t mask)
 {
-  struct Symbol *sym = gv->symbols[elf_hash(name)%SYMHTABSIZE];
-  struct Symbol *second_choice = NULL;
+  struct Symbol *sym,*second_choice,*found;
+  uint32_t minmask = ~0;
 
-  while (sym) {
+  for (sym=gv->symbols[elf_hash(name)%SYMHTABSIZE],second_choice=NULL,found=NULL;
+       sym!=NULL; sym=sym->glob_chain) {
     if (!strcmp(name,sym->name)) {
-      if (second_choice == NULL)
-        second_choice = sym;
+      if (mask) {
+        /* find a symbol with the best-matching (minimal) feature-mask */
+        uint32_t fmask;
 
-      if (sec!=NULL && sym->type==SYM_RELOC) {
-        /* we prefer symbols from a section which has the same CPU-flags
-           as the caller's section */
-        if ((sec->flags & SF_EHFPPC) == (sym->relsect->flags & SF_EHFPPC))
+        if (fmask = sym->fmask) {
+          if ((mask & fmask) != mask)
+            continue;
+          if (fmask <= minmask)
+            minmask = 0/*fmask*/;
+          else
+            continue;
+        }
+        else if (minmask != ~0)
+          continue;
+
+        second_choice = sym;
+        if (sec!=NULL && sym->type==SYM_RELOC) {
+          /* we prefer symbols from a section which has the same CPU-flags
+             as the caller's section */
+          if ((sec->flags & SF_EHFPPC) == (sym->relsect->flags & SF_EHFPPC))
+            found = sym;
+        }
+        else
+          found = sym;
+      }
+      else { /* standard */
+        if (second_choice == NULL)
+          second_choice = sym;
+        found = sym;
+        if (sec!=NULL && sym->type==SYM_RELOC) {
+          /* we prefer symbols from a section which has the same CPU-flags
+             as the caller's section */
+          if ((sec->flags & SF_EHFPPC) == (sym->relsect->flags & SF_EHFPPC))
+            break;
+        }
+        else
           break;
       }
-      else
-        break;
     }
-    sym = sym->glob_chain;
   }
 
   /* accept symbol from a section for a different CPU, if it's the only one */
-  if (!sym && second_choice)
+  if (!(sym=found) && second_choice)
     sym = second_choice;
 
-  if (sym)
-    if (sym->type == SYM_INDIR)
-      return ehf_findsymbol(gv,sec,sym->indir_name);
+  if (sym!=NULL && sym->type==SYM_INDIR)
+      return ehf_findsymbol(gv,sec,sym->indir_name,mask);
 
   return sym;
 }
@@ -1388,7 +1444,7 @@ static struct Symbol *ehf_lnksym(struct GlobalVars *gv,struct Section *sec,
         sprintf(objname,"%s.o",symname);
         ou = art_objunit(gv,objname,dat,sizeof(uint32_t));
         s = add_section(ou,tocd_name,dat,sizeof(uint32_t),ST_DATA,
-                        SF_ALLOC,SP_READ|SP_WRITE,2,FALSE);
+                        SF_ALLOC,SP_READ|SP_WRITE,gv->ptr_alignment,FALSE);
         if (sao = getsecattrovr(gv,tocd_name,SAO_MEMFLAGS))
           s->memattr = sao->memflags;
 
@@ -1403,7 +1459,7 @@ static struct Symbol *ehf_lnksym(struct GlobalVars *gv,struct Section *sec,
           ierror("ehf_lnksym(): %s was assumed to be undefined, but "
                  "in reality it *is* defined",xref->xrefname);
 
-        if (!(sym = findsymbol(gv,sec,xref->xrefname)))
+        if (!(sym = findsymbol(gv,sec,xref->xrefname,0)))
           ierror("ehf_lnksym(): The just defined symbol %s has "
                  "disappeared",xref->xrefname);
         return sym;
@@ -1454,7 +1510,7 @@ static void hunk_memdata(FILE *f,uint32_t mem,uint32_t dat)
 }
 
 
-static void hunk_name_len(FILE *f,const char *name)
+static void hunk_name_len(struct GlobalVars *gv,FILE *f,const char *name)
 /* writes a string in hunk-format style, i.e. first longword contains */
 /* strlen in longwords and then follows the string itself, long-aligned */
 {
@@ -1462,18 +1518,18 @@ static void hunk_name_len(FILE *f,const char *name)
 
   fwrite32be(f,l?((l+3)>>2):0);
   fwritex(f,name,l);
-  fwrite_align(f,2,l);
+  fwrite_align(gv,f,2,l);
 }
 
 
-static void hunk_name(FILE *f,const char *name)
+static void hunk_name(struct GlobalVars *gv,FILE *f,const char *name)
 /* writes a longword-aligned string, like hunk_name_len(), but */
 /* without writing the length */
 {
   size_t l=strlen(name);
 
   fwritex(f,name,l);
-  fwrite_align(f,2,l);
+  fwrite_align(gv,f,2,l);
 }
 
 
@@ -1523,7 +1579,7 @@ static void ext_defs(struct GlobalVars *gv,FILE *f,struct LinkedSection *sec,
           }
           else {
             fwrite32be(f,(xdeftype << 24) | strlen32(sym->name));
-            hunk_name(f,sym->name);           /* write symbol's name */
+            hunk_name(gv,f,sym->name);         /* write symbol's name */
           }
           fwrite32be(f,(uint32_t)sym->value);  /* ... and its value */
         }
@@ -1561,12 +1617,13 @@ static void unsupp_relocs(struct LinkedSection *sec)
   while (rel = (struct Reloc *)remhead(&sec->relocs)) {
     error(32,fff_amigahunk.tname,reloc_name[rel->rtype],
           (int)rel->insert->bpos,(int)rel->insert->bsiz,
-          rel->insert->mask,sec->name,rel->offset);
+          (unsigned long long)rel->insert->mask,sec->name,rel->offset);
   }
 }
 
 
-static void ext_refs(FILE *f,struct LinkedSection *sec,bool ehf)
+static void ext_refs(struct GlobalVars *gv,FILE *f,
+                     struct LinkedSection *sec,bool ehf)
 {
   struct list xnodelist;  /* xrefs with same ref. type and symbol name */
   struct XRefNode *xn,*nextxn;
@@ -1633,7 +1690,7 @@ rtype_done:
     if (!rtype) {
       error(32,fff_amigahunk.tname,reloc_name[xref->rtype],
             (int)xref->insert->bpos,(int)xref->insert->bsiz,
-            xref->insert->mask,sec->name,xref->offset);
+            (unsigned long long)xref->insert->mask,sec->name,xref->offset);
       rtype = EXT_RELREF8;  /* @@@ to keep the loop running */
     }
 
@@ -1668,7 +1725,7 @@ rtype_done:
     }
     while (xn = (struct XRefNode *)remhead(&xnodelist)) {
       fwrite32be(f,((uint32_t)xn->ref_type << 24) | strlen32(xn->sym_name));
-      hunk_name(f,xn->sym_name);  /* symbol's name */
+      hunk_name(gv,f,xn->sym_name);  /* symbol's name */
       if (xn->com_size)  /* store size of common block? */
         fwrite32be(f,xn->com_size);
       fwrite32be(f,(uint32_t)xn->noffsets);  /* number of references */
@@ -1699,7 +1756,7 @@ static void linedebug_hunks(struct GlobalVars *gv,FILE *f,
                      (ldb->num_entries<<1));
           fwrite32be(f,(uint32_t)sec->offset);
           fwrite32be(f,0x4c494e45);  /* "LINE" */
-          hunk_name_len(f,ldb->source_name);
+          hunk_name_len(gv,f,ldb->source_name);
           for (i=0,lptr=ldb->lines,optr=ldb->offsets;
                i<ldb->num_entries; i++) {
             fwrite32be(f,*lptr++);
@@ -1720,7 +1777,7 @@ static void fix_reloc_addends(struct GlobalVars *gv,struct LinkedSection *ls)
 
   for (rel=(struct Reloc *)ls->relocs.first;
        rel->n.next!=NULL; rel=(struct Reloc *)rel->n.next) {
-    writesection(gv,ls->data+rel->offset,rel,rel->addend);
+    writesection(gv,ls->data,rel->offset,rel,rel->addend);
   }
 }
 
@@ -1731,7 +1788,7 @@ static void fix_xref_addends(struct GlobalVars *gv,struct LinkedSection *ls)
 
   for (xref=(struct Reloc *)ls->xrefs.first;
        xref->n.next!=NULL; xref=(struct Reloc *)xref->n.next) {
-    writesection(gv,ls->data+xref->offset,xref,xref->addend);
+    writesection(gv,ls->data,xref->offset,xref,xref->addend);
   }
 }
 
@@ -1742,7 +1799,7 @@ static void fix_resrel_addends(struct GlobalVars *gv,struct LinkedSection *ls)
 
   for (rel=(struct Reloc *)rrlist.first;
        rel->n.next!=NULL; rel=(struct Reloc *)rel->n.next) {
-    writesection(gv,ls->data+rel->offset,rel,rel->addend);
+    writesection(gv,ls->data,rel->offset,rel,rel->addend);
   }
 }
 
@@ -1773,7 +1830,7 @@ static void reloc_hunk(struct GlobalVars *gv,FILE *f,
 /* generate an AmigaDOS/EHF relocation hunk for a specific reloc type */
 {
   struct Reloc *nextrel,*rel=(struct Reloc *)sec->relocs.first;
-  bool hunk_required=FALSE,small_offsets=TRUE;
+  bool hunk_required=FALSE,short_relocs;
   lword chkmask,rmask=makemask(rsize);
   uint16_t rpos=0;
   int i;
@@ -1794,20 +1851,27 @@ static void reloc_hunk(struct GlobalVars *gv,FILE *f,
   else
     chkmask = rmask;
 
+  /* Besides HUNK_RELOC32SHORT (HUNK_DREL32 in executables) also
+     HUNK_RELRELOC32 requires 16-bit offsets in executables due to a
+     bug in AmigaDOS. */
+  short_relocs = relhunk==HUNK_RELOC32SHORT || relhunk==HUNK_DREL32 ||
+                 (relhunk==HUNK_RELRELOC32 && !gv->dest_object);
+
   while (nextrel = (struct Reloc *)rel->n.next) {
     struct RelocInsert *ri;
-    int newrcnt;
 
     if (rel->rtype==rtype && (ri=rel->insert)!=NULL) {
       if (ri->bpos==rpos && ri->bsiz==rsize && (ri->mask&rmask)==chkmask) {
-        /* move reloc node of correct type into relocssect's rlist */
-        remnode(&rel->n);
-        addtail(&rlist[rel->relocsect.lnk->index],&rel->n);
-        rel->offset += rpos >> 3;
-        if (++rcnt[rel->relocsect.lnk->index] >= 0x10000 ||
-            rel->offset >= 0x10000)
-          small_offsets = FALSE; /* no short-reloc hunk would be possible */
-        hunk_required = TRUE;
+        unsigned long offs = rel->offset + (rpos >> 3);
+
+        if (!short_relocs || offs < 0x10000) {
+          /* move reloc node of correct type into relocssect's rlist */
+          remnode(&rel->n);
+          addtail(&rlist[rel->relocsect.lnk->index],&rel->n);
+          rcnt[rel->relocsect.lnk->index]++;
+          rel->offset = offs;
+          hunk_required = TRUE;
+        }
       }
     }
     rel = nextrel;
@@ -1815,39 +1879,27 @@ static void reloc_hunk(struct GlobalVars *gv,FILE *f,
 
   if (hunk_required) {  /* there's at least one relocation */
 
-    if ((relhunk==HUNK_ABSRELOC32 &&
-         gv->reloctab_format==RTAB_SHORTOFF && small_offsets) ||
-        (relhunk==HUNK_RELRELOC32 && !gv->dest_object)) {
-      /* Make a short hunk with 16-bit offsets.
-         For executables, HUNK_DREL32 is used instead of the correct
-         HUNK_RELOC32SHORT to be compatible with OS2.0.
-         Due to a bug in OS3.x HUNK_RELRELOC32 requires 16-bit offsets
-         in executables. */
+    if (short_relocs) {
+      /* Make a short-reloc hunk with 16-bit offsets. */
       int cnt=0;
-
-      if (!small_offsets) {
-        /* cannot represent those relocs, so put them back */
-        for (i=0; i<gv->nsecs; i++) {
-          while (rel = (struct Reloc *)remhead(&rlist[i]))
-            addtail(&sec->relocs,&rel->n);
-        }
-        return;
-      }
-
-      if (!gv->dest_object && relhunk==HUNK_ABSRELOC32)
-        relhunk = HUNK_DREL32;
 
       fwrite32be(f,relhunk);  /* reloc hunk id */
       for (i=0; i<gv->nsecs; i++) {
-        if (rcnt[i]) {
-          fwrite16be(f,(uint16_t)rcnt[i]);  /* number of relocations */
+        while (rcnt[i]) {
+          /* cannot write more than 65535 relocs at once with short-relocs */
+          int n = (rcnt[i]>0xffff) ? 0xffff : rcnt[i];
+
+          fwrite16be(f,(uint16_t)n);  /* number of relocations */
           fwrite16be(f,(uint16_t)i);  /* section index */
+          rcnt[i] -= n;
           cnt += 2;
 
           /* store relocation offsets */
-          while (rel = (struct Reloc *)remhead(&rlist[i])) {
-            fwrite16be(f,(uint16_t)rel->offset);
-            cnt++;
+          while (n--) {
+            if (rel = (struct Reloc *)remhead(&rlist[i])) {
+              fwrite16be(f,(uint16_t)rel->offset);
+              cnt++;
+            }
           }
         }
       }
@@ -1859,12 +1911,12 @@ static void reloc_hunk(struct GlobalVars *gv,FILE *f,
     }
 
     else {
-      /* all other relocation hunks */
+      /* normal, 32-bit-offset relocation hunks */
       fwrite32be(f,relhunk);  /* reloc hunk id */
       for (i=0; i<gv->nsecs; i++) {
         while (rcnt[i]) {
           /* never write more than 65536 relocs at once - there is a bug */
-          /* in dos.library which rejects the executable file otherwise */
+          /* in AmigaDOS which rejects the executable file otherwise */
           int n = (rcnt[i]>0x10000) ? 0x10000 : rcnt[i];
 
           fwrite32be(f,(uint32_t)n);  /* number of relocations */
@@ -1873,9 +1925,8 @@ static void reloc_hunk(struct GlobalVars *gv,FILE *f,
 
           /* store relocation offsets */
           while (n--) {
-            if (rel = (struct Reloc *)remhead(&rlist[i])) {
+            if (rel = (struct Reloc *)remhead(&rlist[i]))
               fwrite32be(f,(uint32_t)rel->offset);
-            }
           }
         }
       }
@@ -1899,7 +1950,7 @@ static void writeobject(struct GlobalVars *gv,FILE *f,bool ehf)
 
   alloc_reloc_lists(gv);
   fwrite32be(f,HUNK_UNIT);
-  hunk_name_len(f,gv->dest_name);  /* unit name is output file name */
+  hunk_name_len(gv,f,gv->dest_name);  /* unit name is output file name */
 
   if (ls->n.next == NULL) {
     /* special case: no sections, create dummy section */
@@ -1913,7 +1964,7 @@ static void writeobject(struct GlobalVars *gv,FILE *f,bool ehf)
   while (nextls = (struct LinkedSection *)ls->n.next) {
     exthunk = symhunk = FALSE;
     fwrite32be(f,HUNK_NAME);
-    hunk_name_len(f,ls->name);  /* section name */
+    hunk_name_len(gv,f,ls->name);  /* section name */
 
     switch (ls->type) {  /* section type */
       case ST_CODE:
@@ -1938,7 +1989,7 @@ static void writeobject(struct GlobalVars *gv,FILE *f,bool ehf)
     fwrite32be(f,(ls->size+3)>>2);  /* section size */
     if (!(ls->flags & SF_UNINITIALIZED)) {
       fwritex(f,ls->data,ls->size);  /* write section contents */
-      fwrite_align(f,2,ls->size);
+      fwrite_align(gv,f,2,ls->size);
     }
 
     /* relocation hunks */
@@ -1953,7 +2004,7 @@ static void writeobject(struct GlobalVars *gv,FILE *f,bool ehf)
     unsupp_relocs(ls);  /* print unsupported relocations */
 
     /* external references and global definitions */
-    ext_refs(f,ls,ehf);
+    ext_refs(gv,f,ls,ehf);
     ext_defs(gv,f,ls,SYMB_GLOBAL,SYM_RELOC,EXT_DEF);
     ext_defs(gv,f,ls,SYMB_GLOBAL,SYM_ABS,EXT_ABS);
     ext_defs(gv,f,ls,SYMB_GLOBAL,SYM_COMMON,EXT_IGNORE);
@@ -2075,7 +2126,7 @@ static void writeexec(struct GlobalVars *gv,FILE *f)
 
       fwrite32be(f,((ls->filesize+3)>>2)+rrcnt+1);
       fwritex(f,ls->data,ls->filesize);   /* write section contents */
-      fwrite_align(f,2,ls->filesize);
+      fwrite_align(gv,f,2,ls->filesize);
 
       /* Append a special reloc table for resident programs.
          Format: ulong nentries [, ulong reloc-offset ...] */
@@ -2093,10 +2144,12 @@ static void writeexec(struct GlobalVars *gv,FILE *f)
     else {
       fwrite32be(f,(ls->filesize+3)>>2);  /* initialized section size */
       fwritex(f,ls->data,ls->filesize);   /* write section contents */
-      fwrite_align(f,2,ls->filesize);
+      fwrite_align(gv,f,2,ls->filesize);
     }
 
     /* relocation hunks */
+    if (gv->reloctab_format==RTAB_SHORTOFF)
+      reloc_hunk(gv,f,ls,HUNK_DREL32,R_ABS,32);  /* HUNK_RELOC32SHORT */
     reloc_hunk(gv,f,ls,HUNK_ABSRELOC32,R_ABS,32);
     reloc_hunk(gv,f,ls,HUNK_RELRELOC32,R_PC,32);
     unsupp_relocs(ls);  /* print unsupported relocations */

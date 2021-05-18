@@ -1,8 +1,8 @@
-/* $VER: vlink t_elf64x86.c V0.14 (24.06.11)
+/* $VER: vlink t_elf64x86.c V0.16d (28.02.20)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2011  Frank Wille
+ * Copyright (c) 1997-2020  Frank Wille
  */
 
 
@@ -14,7 +14,7 @@
 #include "rel_elfx86_64.h"
 
 
-static int x86_64_identify(char *,uint8_t *,unsigned long,bool);
+static int x86_64_identify(struct GlobalVars *,char *,uint8_t *,unsigned long,bool);
 static void x86_64_readconv(struct GlobalVars *,struct LinkFile *);
 static struct Symbol *x86_64_dynentry(struct GlobalVars *,DynArg,int);
 static void x86_64_dyncreate(struct GlobalVars *);
@@ -24,6 +24,7 @@ static void x86_64_writeexec(struct GlobalVars *,FILE *);
 
 struct FFFuncs fff_elf64x86 = {
   "elf64x86",
+  NULL,
   NULL,
   NULL,
   NULL,
@@ -48,7 +49,7 @@ struct FFFuncs fff_elf64x86 = {
   0,
   RTAB_ADDEND,RTAB_STANDARD|RTAB_ADDEND,
   _LITTLE_ENDIAN_,
-  32
+  64,0
 };
 
 
@@ -58,7 +59,8 @@ struct FFFuncs fff_elf64x86 = {
 /*****************************************************************/
 
 
-static int x86_64_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int x86_64_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                           unsigned long plen,bool lib)
 /* identify ELF-x86_64-LittleEndian */
 {
   return elf_identify(&fff_elf64x86,name,p,plen,
@@ -134,7 +136,6 @@ static struct Symbol *x86_64_dynentry(struct GlobalVars *gv,DynArg a,int etype)
 {
   struct Symbol *entry_sym = NULL;
   struct Section *sec;
-  char *bssname;
 
   switch (etype) {
 

@@ -49,11 +49,13 @@ static const char null_exe[] = {
 };
 
 
-static int aoutnull_identify(char *,uint8_t *,unsigned long,bool);
+static int aoutnull_identify(struct GlobalVars *,char *,uint8_t *,
+                             unsigned long,bool);
 
 struct FFFuncs fff_aoutnull = {
   "aoutnull",
   null_exe,
+  NULL,
   NULL,
   NULL,
   aout_headersize,
@@ -74,13 +76,14 @@ struct FFFuncs fff_aoutnull = {
   0,
   0,
   RTAB_STANDARD,RTAB_STANDARD,
-  -1,  /* endianess unknown */
-  32,
+  -1,    /* endianess unknown */
+  0,0,   /* addr_bits from input */
   FFF_BASEINCR
 };
 
 
-static int aoutnull_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int aoutnull_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                             unsigned long plen,bool lib)
 {
   return aout_identify(&fff_aoutnull,name,(struct aout_hdr *)p,plen);
 }

@@ -12,7 +12,7 @@
 #include "xfile.h"
 
 
-static int identify(char *,uint8_t *,unsigned long,bool);
+static int identify(struct GlobalVars *,char *,uint8_t *,unsigned long,bool);
 static void readconv(struct GlobalVars *,struct LinkFile *);
 static int targetlink(struct GlobalVars *,struct LinkedSection *,
                       struct Section *);
@@ -25,6 +25,7 @@ static void writeexec(struct GlobalVars *,FILE *);
 struct FFFuncs fff_xfile = {
   "xfile",
   defaultscript,
+  NULL,
   NULL,
   NULL,
   headersize,
@@ -46,7 +47,7 @@ struct FFFuncs fff_xfile = {
   0,
   RTAB_STANDARD,RTAB_STANDARD,
   _BIG_ENDIAN_,
-  32,
+  32,1,
   FFF_BASEINCR
 };
 
@@ -57,7 +58,8 @@ struct FFFuncs fff_xfile = {
 /*****************************************************************/
 
 
-static int identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                    unsigned long plen,bool lib)
 /* identify an XFile-format file */
 {
   return ID_UNKNOWN;  /* @@@ no read-support at the moment */
@@ -198,7 +200,7 @@ static size_t xfile_writerelocs(struct GlobalVars *gv,FILE *f,
           if (rel->rtype!=R_ABS || ri->bpos!=0 || ri->bsiz!=32) {
             if (rel->rtype==R_ABS && (ri->bpos!=0 || ri->bsiz!=32))
               error(32,fff_xfile.tname,reloc_name[rel->rtype],
-                    (int)ri->bpos,(int)ri->bsiz,ri->mask,
+                    (int)ri->bpos,(int)ri->bsiz,(unsigned long long)ri->mask,
                     sections[i]->name,rel->offset);
             continue;
           }
@@ -269,12 +271,14 @@ static void writeexec(struct GlobalVars *gv,FILE *f)
 
   if (sections[0]) {
     fwritex(f,sections[0]->data,sections[0]->filesize);
-    fwritegap(f,(sections[0]->size-sections[0]->filesize)+sections[0]->gapsize);
+    fwritegap(gv,f,
+              (sections[0]->size-sections[0]->filesize)+sections[0]->gapsize);
   }
 
   if (sections[1]) {
     fwritex(f,sections[1]->data,sections[1]->filesize);
-    fwritegap(f,(sections[1]->size-sections[1]->filesize)+sections[1]->gapsize);
+    fwritegap(gv,f,
+              (sections[1]->size-sections[1]->filesize)+sections[1]->gapsize);
   }
 
   relocsz = xfile_writerelocs(gv,f,sections);

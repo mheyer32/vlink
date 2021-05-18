@@ -1,8 +1,8 @@
-/* $VER: vlink support.c V0.15b (27.08.16)
+/* $VER: vlink support.c V0.16h (10.03.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2016  Frank Wille
+ * Copyright (c) 1997-2021  Frank Wille
  */
 
 
@@ -25,6 +25,9 @@ void *alloc(size_t size)
     size = 1;
   if (!(p = malloc(size)))
     error(1);  /* out of memory */
+#ifdef DEBUG
+  memset(p,0x55,size);
+#endif
   return p;
 }
 
@@ -149,6 +152,16 @@ struct node *remnode(struct node *n)
 }
 
 
+int stricmp(const char *str1,const char *str2)
+{
+  while (tolower((unsigned char)*str1) == tolower((unsigned char)*str2)) {
+    if (!*str1) return 0;
+    str1++; str2++;
+  }
+  return tolower(*(unsigned char *)str1) - tolower(*(unsigned char *)str2);
+}
+
+
 static size_t filesize(FILE *fp,const char *name)
 {
   /* somebody knows a better way to determine file size in ANSI C? */
@@ -160,7 +173,7 @@ static size_t filesize(FILE *fp,const char *name)
         if (fseek(fp,oldpos,SEEK_SET) >= 0)
           return (size_t)size;
   fclose(fp);
-  error(5,name);  /* read error - doesn't return */
+  error(7,name);  /* read error - doesn't return */
   return 0;
 }
 
@@ -199,7 +212,7 @@ const char *base_name(const char *s)
 
   while (l--) {
     c = s[l];
-    if (c== '/' || c==':')
+    if (c=='/' || c=='\\' || c==':')
       return &s[l+1];
   }
   return s;
@@ -450,29 +463,6 @@ void write64(bool be,void *p,uint64_t d)
 }
 
 
-int writetaddr(struct GlobalVars *gv,void *p,lword d)
-{
-  bool be = fff[gv->dest_format]->endianess == _BIG_ENDIAN_;
-
-  switch (fff[gv->dest_format]->addr_bits) {
-    case 16:
-      write16(be,p,(uint16_t)d);
-      return 2;
-    case 32:
-      write32(be,p,(uint32_t)d);
-      return 4;
-    case 64:
-      write64(be,p,(uint64_t)d);
-      return 8;
-    default:
-      ierror("writetaddr(): target address has %d bits",
-             (int)fff[gv->dest_format]->addr_bits);
-      break;
-  }
-  return 0;
-}
-
-
 lword readbf(bool be,void *src,int fldsiz,int pos,int siz)
 /* read value from bitfield with length fldsiz, starting at bit-position pos */
 {
@@ -703,27 +693,64 @@ void fwrite8(FILE *fp,uint8_t w)
 }
 
 
-void fwrite_align(FILE *fp,uint32_t a,uint32_t n)
+void fwritetbyte(struct GlobalVars *gv,FILE *fp,lword w)
+/* write a target-byte */
+{
+  int bpb = gv->bits_per_tbyte;
+  uint8_t buf[16];
+
+  if (bpb > 16*sizeof(uint8_t))
+    ierror("fwritetbyte(): bpb>128 (%d)",bpb);
+  writereloc(gv->endianess,buf,0,bpb,w);
+  fwritex(fp,buf,(bpb+7)/8);
+}
+
+
+void fwritetaddr(struct GlobalVars *gv,FILE *fp,lword d)
+/* write a target address to file */
+{
+  char buf[16];
+  size_t len;
+
+  if (len = (size_t)writetaddr(gv,buf,0,d))
+    fwritex(fp,buf,len);
+}
+
+
+void fwrite_align(struct GlobalVars *gv,FILE *fp,uint32_t a,uint32_t n)
 /* writes as many zero bytes as required for alignment a (a bits */
 /* must be zero) with current file offset n */
 {
   static uint8_t alignment_bytes[MAX_FWALIGN];
 
   a = 1<<a;
-  if ((n = (a-(n&(a-1))&(a-1))) > MAX_FWALIGN)
+  n = tbytes(gv, a - (n & (a-1)) & (a-1));
+  if (n > MAX_FWALIGN)
     ierror("fwrite_align(): Alignment > %d required",MAX_FWALIGN);
   fwritex(fp,alignment_bytes,n);
 }
 
 
-void fwritegap(FILE *f,long bytes)
+void fwritegap(struct GlobalVars *gv,FILE *f,long bytes)
 {
   uint8_t buf[GAPBUFSIZE];
 
+  bytes = tbytes(gv,bytes);
   memset(buf,0,GAPBUFSIZE);
   do
     fwritex(f,buf,bytes>GAPBUFSIZE?GAPBUFSIZE:bytes);
   while ((bytes-=GAPBUFSIZE) > 0);
+}
+
+
+void fwritefullsect(struct GlobalVars *gv,FILE *fp,struct LinkedSection *ls)
+/* write section contents and uninitialized part as zero */
+{
+  if (ls != NULL) {
+    fwritex(fp,ls->data,tbytes(gv,ls->filesize));
+    if (ls->filesize < ls->size)
+      fwritegap(gv,fp,ls->size - ls->filesize);
+  }
 }
 
 
@@ -806,20 +833,6 @@ int highest_bit_set(lword x)
 }
 
 
-void memset16(struct GlobalVars *gv,void *start,uint16_t fill,long n)
-{
-  if (n > 0) {
-    uint8_t f[2];
-    uint8_t *p;
-    int i;
-
-    write16(fff[gv->dest_format]->endianess==_BIG_ENDIAN_,f,fill);
-    for (p=start,i=((unsigned long)start)&1; n; n--,i^=1)
-      *p++ = f[i];
-  }
-}
-
-
 lword sign_extend(lword v,int n)
 /* sign-extend an n-bit value to lword-size */
 {
@@ -830,7 +843,7 @@ lword sign_extend(lword v,int n)
 }
 
 
-void add_symnames(struct SymNames **snlist,const char *name)
+void add_symnames(struct SymNames **snlist,const char *name,lword val)
 /* add a new name to a SymNames list */
 {
   struct SymNames *new = alloc(sizeof(struct SymNames));
@@ -838,6 +851,7 @@ void add_symnames(struct SymNames **snlist,const char *name)
 
   new->next = NULL;
   new->name = name;
+  new->value = val;
   if (sn = *snlist) {
     while (sn->next)
       sn = sn->next;

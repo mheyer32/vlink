@@ -1,8 +1,8 @@
-/* $VER: vlink linker.c V0.16b (29.12.17)
+/* $VER: vlink linker.c V0.16h (20.03.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2017  Frank Wille
+ * Copyright (c) 1997-2021  Frank Wille
  */
 
 
@@ -199,9 +199,6 @@ static char *searchlib(struct GlobalVars *gv,char *libname,int so_ver)
   int i,count;
   size_t len;
 
-  if (p = scan_directory(".",libname,so_ver))
-    return (p);
-
   while (nextlpn = (struct LibPath *)lpn->n.next) {
     for (count=gv->flavours.n_flavours; count>=0; count--) {
       flavour_dir = gv->flavours.flavour_dir;
@@ -220,6 +217,11 @@ static char *searchlib(struct GlobalVars *gv,char *libname,int so_ver)
     }
     lpn = nextlpn;
   }
+
+  /* scan local directly at last */
+  if (p = scan_directory(".",libname,so_ver))
+    return (p);
+
   return (NULL);
 }
 
@@ -356,7 +358,11 @@ static void merge_sec_attrs(struct LinkedSection *lsn,struct Section *sec,
       strncpy(prot1,protstring(lsn->protection),5);
       strncpy(prot2,protstring(lsn->protection|sec->protection),5);
       strcpy(namebuf2,getobjname(((struct Section *)lsn->sections.last)->obj));
+#if 0 /* @@@ FIXME */
       error(22,lsn->name,prot1,namebuf2,prot2,getobjname(sec->obj));
+#else
+      error(22,lsn->name,prot1,prot2,getobjname(sec->obj));
+#endif
     }
     lsn->protection |= sec->protection;
   }
@@ -457,7 +463,8 @@ static struct LinkedSection *get_matching_lnksec(struct GlobalVars *gv,
             return (lsn);
           }
 
-          if (gv->merge_same_type && lsn->type==sec->type) {
+          if (gv->merge_all ||
+              (gv->merge_same_type && lsn->type==sec->type)) {
             merge_sec_attrs(lsn,sec,f);
             return (lsn);
           }
@@ -537,7 +544,8 @@ static unsigned long allocate_common(struct GlobalVars *gv,
 
         if (gv->map_file)
           fprintf(gv->map_file,"Allocating common %s: %x at %llx hex\n",
-                  sym->name,(int)sym->size,(lword)sec->va+sym->value);
+                  sym->name,(int)sym->size,
+                  (unsigned long long)sec->va+sym->value);
       }
     }
   }
@@ -547,7 +555,7 @@ static unsigned long allocate_common(struct GlobalVars *gv,
 }
 
 
-void print_symbol(FILE *f,struct Symbol *sym)
+void print_symbol(struct GlobalVars *gv,FILE *f,struct Symbol *sym)
 /* print symbol name, type, value, etc. */
 {
   if (sym->type == SYM_COMMON)
@@ -558,16 +566,18 @@ void print_symbol(FILE *f,struct Symbol *sym)
     fprintf(f,"  %s: %s%s%s, referencing %s\n",sym->name,
             sym_bind[sym->bind],sym_type[sym->type],sym_info[sym->info],
             sym->indir_name);
-  else
+  else {
 #if 0
     fprintf(f,"  %s: %s%s%s, value 0x%llx, size %d\n",sym->name,
             sym_bind[sym->bind],sym_type[sym->type],sym_info[sym->info],
-            (uint64_t)sym->value,(int)sym->size);
+            (unsigned long long)sym->value,(int)sym->size);
 #else
-    fprintf(f,"  %s: %s%s%s, value 0x%x, size %d\n",sym->name,
+    fprintf(f,"  0x%0*llx %s: %s%s%s, size %d\n",
+            gv->bits_per_taddr/4,(unsigned long long)sym->value,sym->name,
             sym_bind[sym->bind],sym_type[sym->type],sym_info[sym->info],
-            (uint32_t)sym->value,(int)sym->size);
+            (int)sym->size);
 #endif
+  }
 }
 
 
@@ -595,7 +605,7 @@ static void add_undef_syms(struct GlobalVars *gv)
   struct SymNames *sn;
 
   if (sn = gv->undef_syms) {
-    static uint8_t dat[sizeof(uint32_t)];  /* contents of dummy section */
+    static uint8_t dat[1];  /* contents of dummy section */
     struct ObjectUnit *obj;
     struct Section *sec = NULL;
     struct Section *dummysec;
@@ -613,9 +623,9 @@ static void add_undef_syms(struct GlobalVars *gv)
       ierror("add_undef_syms(): no objects or no sections on command line");
 
     /* make artificial object for external references */
-    obj = art_objunit(gv,"UNDEFSYMBOLS",dat,sizeof(uint32_t));
+    obj = art_objunit(gv,"UNDEFSYMBOLS",dat,0);
     obj->flags |= OUF_LINKED;
-    dummysec = create_section(obj,sec->name,dat,sizeof(uint32_t));
+    dummysec = create_section(obj,sec->name,dat,0);
     dummysec->type = sec->type;
     dummysec->protection = sec->protection;
     dummysec->flags = sec->flags;
@@ -623,9 +633,9 @@ static void add_undef_syms(struct GlobalVars *gv)
     addtail(&gv->selobjects,&obj->n);
 
     do {
-      /* add a dummy xreference of type R_NONE to the dummy section */
+      /* add a dummy references of type R_NONE to the dummy section */
       r = newreloc(gv,dummysec,sn->name,NULL,0,0,R_NONE,0);
-      addreloc(dummysec,r,0,32,-1);
+      addreloc(dummysec,r,0,0,-1);
     }
     while (sn = sn->next);
   }
@@ -830,7 +840,7 @@ static void ref_prot_symbols(struct GlobalVars *gv)
 
   /* find global protected symbols */
   for (sn=gv->prot_syms; sn!=NULL; sn=sn->next) {
-    if (psym = findsymbol(gv,NULL,sn->name))
+    if (psym = findsymbol(gv,NULL,sn->name,0))
       ref_section(psym->relsect);
   }
 
@@ -879,14 +889,16 @@ static void merge_ld_section(struct GlobalVars *gv,uint8_t stype,
 static void merge_seclist(struct GlobalVars *gv,struct list *seclist)
 {
   struct LinkedSection *ls;
-  struct Section *sec;
+  struct Section *sec,*nextsec;
 
   do {
     bool create_allowed = TRUE;
 
-    for (sec=(struct Section *)seclist->first;
-         sec->n.next!=NULL; sec=(struct Section *)sec->n.next) {
+    sec = (struct Section *)seclist->first;
+
+    while (nextsec = (struct Section *)sec->n.next) {
       ls = get_matching_lnksec(gv,sec,NULL);
+
       if (!ls && create_allowed) {
         Dprintf("new: %s(%s) -> %s\n",getobjname(sec->obj),
                 sec->name,sec->name);
@@ -896,9 +908,21 @@ static void merge_seclist(struct GlobalVars *gv,struct list *seclist)
       }
       if (ls)
         addtail(&ls->sections,remnode(&sec->n));
+
+      sec = nextsec;
     }
   }
   while (!(listempty(seclist)));
+}
+
+
+static int sym_addr_cmp(const void *left,const void *right)
+/* qsort: compare symbol addresses */
+{
+  unsigned long addrl = (*(struct Symbol **)left)->value;
+  unsigned long addrr = (*(struct Symbol **)right)->value;
+
+  return (addrl<addrr) ? -1 : ((addrl>addrr) ? 1 : 0);
 }
 
 
@@ -913,6 +937,7 @@ void linker_init(struct GlobalVars *gv)
   initlist(&gv->scriptsymbols);
   gv->got_base_name = gotbase_name;
   gv->plt_base_name = pltbase_name;
+  gv->ptr_alignment = fff[gv->dest_format]->ptr_alignment;
 
   if (gv->reloctab_format != RTAB_UNDEF) {
     if (!(fff[gv->dest_format]->rtab_mask & gv->reloctab_format)) {
@@ -922,6 +947,10 @@ void linker_init(struct GlobalVars *gv)
   }
   else
     gv->reloctab_format = fff[gv->dest_format]->rtab_format;
+
+  /* init destination format */
+  if (fff[gv->dest_format]->init != NULL)
+    fff[gv->dest_format]->init(gv,FFINI_DESTFMT);
 }
 
 
@@ -975,7 +1004,7 @@ void linker_load(struct GlobalVars *gv)
 
     /* determine the object's file format */
     for (i=0,ff=ID_UNKNOWN; fff[i]; i++) {
-      if ((ff = (fff[i]->identify)((char *)objname,objptr,objlen,ifn->lib))
+      if ((ff = (fff[i]->identify)(gv,(char *)objname,objptr,objlen,ifn->lib))
           != ID_UNKNOWN)
         break;
     }
@@ -989,6 +1018,10 @@ void linker_load(struct GlobalVars *gv)
       else if (fff[i]->endianess>=0 && gv->endianess!=fff[i]->endianess)
         error(61,objname);  /* endianess differs from previous objects */
 
+      /* determine bits per taddr from highest value in all input files */
+      if (fff[i]->addr_bits > gv->bits_per_taddr)
+        gv->bits_per_taddr = fff[i]->addr_bits;
+
       /* create new link file node */
       lf = (struct LinkFile *)alloc(sizeof(struct LinkFile));
       lf->pathname = allocstring(namebuf);
@@ -998,28 +1031,49 @@ void linker_load(struct GlobalVars *gv)
       lf->format = (uint8_t)i;
       lf->type = (uint8_t)ff;
       lf->flags = ifn->flags;
+      lf->renames = ifn->renames;
       if (gv->trace_file)
         fprintf(gv->trace_file,"%s (%s %s)\n",namebuf,fff[i]->tname,
                                               filetypes[ff]);
-
-      /* read the file and convert into internal format */
-      fff[i]->readconv(gv,lf);
       addtail(&gv->linkfiles,&lf->n);
     }
   }
 
   if (gv->endianess < 0) {
-    /* When endianess is still unknown, after reading all input files,
-       we take the it from the destination format. */
+    /* When endianess is still unknown, after identifying all input files,
+       we take it from the destination format. */
     gv->endianess = fff[gv->dest_format]->endianess;
 
     /* The destination format didn't define the endianess either?
        Then guess by using the host endianess. */
-    if (gv->endianess < 0)
+    if (gv->endianess < 0) {
       gv->endianess = host_endianess();
+      error(148);  /* warn about it */
+    }
   }
 
-  collect_constructors(gv); /* scan for con-/destructor functions */
+  if (gv->bits_per_tbyte == 0)
+    gv->bits_per_tbyte = 8;  /* default to 8-bit bytes */
+
+  /* target format has priority, provided it defines the bits per taddr */
+  if (fff[gv->dest_format]->addr_bits > 0) {
+    if (gv->bits_per_taddr == 0)
+      gv->bits_per_taddr = fff[gv->dest_format]->addr_bits;
+    else if (gv->bits_per_taddr != fff[gv->dest_format]->addr_bits)
+      error(149);  /* mismatching taddr sizes */
+  }
+  if (gv->bits_per_taddr == 0)
+    ierror("Neither input nor output formats define target address size");
+
+  if (gv->tbytes_per_taddr == 0)
+    gv->tbytes_per_taddr = gv->bits_per_taddr / gv->bits_per_tbyte;
+
+  /* read all files and convert them into internal format */
+  for (lf=(struct LinkFile *)gv->linkfiles.first;
+       lf->n.next!=NULL; lf=(struct LinkFile *)lf->n.next)
+    fff[i]->readconv(gv,lf);
+
+  collect_constructors(gv); /* scan them for con-/destructor functions */
   add_undef_syms(gv);       /* put syms. marked as undef. into 1st sec. */
 }
 
@@ -1028,7 +1082,7 @@ void linker_resolve(struct GlobalVars *gv)
 /* Resolve all symbol references and pull the required objects into */
 /* the gv->selobjects list. */
 {
-  bool constructors_made = FALSE;
+  bool last_actions_done = FALSE;
   bool pseudo_dynlink = (fff[gv->dest_format]->flags&FFF_PSEUDO_DYNLINK)!=0;
   struct ObjectUnit *obj = (struct ObjectUnit *)gv->selobjects.first;
   static const char *pulltxt = " needed due to ";
@@ -1051,6 +1105,7 @@ void linker_resolve(struct GlobalVars *gv)
     struct Reloc *xref;
     struct Symbol *xdef;
     struct ObjectUnit *pull_unit;
+    uint32_t cmask;
 
     /* all sections of this object are checked for external references */
     for (sec=(struct Section *)obj->sections.first;
@@ -1059,13 +1114,28 @@ void linker_resolve(struct GlobalVars *gv)
       for (xref=(struct Reloc *)sec->xrefs.first;
            xref->n.next!=NULL; xref=(struct Reloc *)xref->n.next) {
 
+        /* remember common mask, when set */
+        if (xref->flags & RELF_MASKED)
+          cmask = xref->relocsect.smask->common_mask;
+        else
+          cmask = 0;
+
+        /* preset as unresolved; warning: union! resets also smask, id, etc. */
+        xref->relocsect.symbol = NULL;
+
         if (xref->rtype == R_LOADREL) {
           /* addend offsets to load address, nothing to resolve */
           continue;
         }
 
+        if ((xref->flags & RELF_WEAK) &&
+            (gv->dest_object || gv->dest_sharedobj)) {
+          /* resolve weak symbols only in executables */
+          continue;
+        }
+
         /* find a global symbol with this name in any object or library */
-        xdef = findsymbol(gv,sec,xref->xrefname);
+        xdef = findsymbol(gv,sec,xref->xrefname,cmask);
 
         if (xdef!=NULL && xref->rtype==R_LOCALPC) {
           /* R_LOCALPC only accepts symbols which are defined in the
@@ -1232,9 +1302,11 @@ void linker_resolve(struct GlobalVars *gv)
       }
     }
 
-    if (obj->n.next->next == NULL && !constructors_made) {
+    if (obj->n.next->next == NULL && !last_actions_done) {
+      if (fff[gv->dest_format]->init != NULL)
+        fff[gv->dest_format]->init(gv,FFINI_RESOLVE);
       make_constructors(gv);  /* Con-/Destructor object always at last */
-      constructors_made = TRUE;
+      last_actions_done = TRUE;
     }
     obj = (struct ObjectUnit *)obj->n.next;
   }
@@ -1498,10 +1570,14 @@ void linker_join(struct GlobalVars *gv)
         }
       }
 
+      if (ls->ld_flags & LSF_USED)
+        error(81,ls->name);  /* multiple use of section in linker script */
+
       /* align this section to the maximum required alignment */
       align_address(ls->relocmem,ls->destmem,ls->alignment);
       ls->base = ls->relocmem->current;
       ls->copybase = ls->destmem->current;
+      ls->ld_flags |= LSF_USED;
 
       /* reset lnksec pointers for phase 2 */
       for (obj=(struct ObjectUnit *)gv->selobjects.first;
@@ -1550,11 +1626,16 @@ void linker_join(struct GlobalVars *gv)
           }
           free_patterns(filepattern,secpatterns);
         }
-        else  /* merge art. section created by a data command */
+        else { /* merge art. section created by a data command */
           merge_ld_section(gv,~0,ls,sec);
+          if (ls->type == ST_UNDEFINED)
+            ls->type = ST_DATA;   /* sect. becomes data due to data elements */
+          ls->flags |= SF_ALLOC;  /* @@@ data should allocate the section */
+        }
 
         /* keep section size up to date */
-        ls->size = ls->relocmem->current - ls->base;
+        if (ls->relocmem->current - ls->base > ls->size)
+          ls->size = ls->relocmem->current - ls->base;
         if (sec = last_initialized(ls))
           ls->filesize = (sec->va + sec->size) - ls->base;
         else
@@ -1611,7 +1692,7 @@ void linker_join(struct GlobalVars *gv)
 
   else {  /* !gv->use_ldscript */
     /* Default linkage rules. Link all code, all data, all bss. */
-    unsigned long va = 0;
+    unsigned long va = gv->start_addr;
     bool baseincr = (fff[gv->dest_format]->flags&FFF_BASEINCR) != 0;
     struct LinkedSection *ls,*newls;
     struct list seclist;
@@ -1860,7 +1941,6 @@ void linker_copy(struct GlobalVars *gv)
 
   for (ls=(struct LinkedSection *)gv->lnksec.first;
        ls->n.next!=NULL; ls=(struct LinkedSection *)ls->n.next) {
-    bool print_symbols_of_header = TRUE;
     unsigned long lastsecend = 0;  /* for filling gaps */
 
     if (gv->trace_file) {
@@ -1872,7 +1952,7 @@ void linker_copy(struct GlobalVars *gv)
       maxls = ls;
     }
     /* allocate memory for section, even for uninitialized ones */
-    ls->data = alloczero(ls->size);
+    ls->data = alloczero(tbytes(gv,ls->size));
 
     for (sec=(struct Section *)ls->sections.first;
          sec->n.next!=NULL; sec=(struct Section *)sec->n.next) {
@@ -1880,9 +1960,9 @@ void linker_copy(struct GlobalVars *gv)
 
       if (ls->data && sec->data) {
         /* copy section contents, fill gaps */
-        memset16(gv,ls->data + lastsecend,sec->filldata,
-                 sec->offset - lastsecend);
-        memcpy(ls->data+sec->offset,sec->data,sec->size);
+        section_fill(gv,ls->data,lastsecend,sec->filldata,
+                     sec->offset-lastsecend);
+        section_copy(gv,ls->data,sec->offset,sec->data,sec->size);
         lastsecend = sec->offset + sec->size;
       }
 
@@ -1903,33 +1983,62 @@ void linker_copy(struct GlobalVars *gv)
                 if (sym->type == SYM_RELOC)
                   sym->value += sec->va;  /* was sec->offset */
                 addtail(&ls->symbols,&sym->n);
-
-                if (gv->map_file) {
-                  if (print_symbols_of_header)
-                    fprintf(gv->map_file,"\nSymbols of %s:\n",ls->name);
-                  print_symbol(gv->map_file,sym);
-                  print_symbols_of_header = FALSE;
-                }
               }
             }
           }
         }
       }
     }
+
+    if (gv->map_file) {
+      /* print section's symbols to map file, sorted by address */
+      struct Symbol **sym_ptr_array,**p;
+      int cnt = 0;
+
+      /* count symbols in this section, then sort them by address */
+      for (sym=(struct Symbol *)ls->symbols.first;
+           sym->n.next!=NULL; sym=(struct Symbol *)sym->n.next)
+        cnt++;
+      if (cnt > 0) {
+        sym_ptr_array = alloc(cnt * sizeof(void *));
+        for (sym=(struct Symbol *)ls->symbols.first,p=sym_ptr_array;
+             sym->n.next!=NULL; sym=(struct Symbol *)sym->n.next)
+          *p++ = sym;
+        if (cnt > 1)
+          qsort(sym_ptr_array,cnt,sizeof(void *),sym_addr_cmp);
+
+        fprintf(gv->map_file,"\nSymbols of %s:\n",ls->name);
+        for (p=sym_ptr_array; cnt>0; p++,cnt--)
+          print_symbol(gv,gv->map_file,*p);
+        free(sym_ptr_array);
+      }
+    }
+
+    if (gv->vice_file) {
+      /* Label to address mapping for the VICe emulator */
+      for (sym=(struct Symbol *)ls->symbols.first;
+           sym->n.next!=NULL; sym=(struct Symbol *)sym->n.next) {
+        if (sym->type==SYM_ABS || sym->type==SYM_RELOC) {
+          fprintf(gv->vice_file,"al C:%04x .%s\n",
+                  (unsigned)sym->value,sym->name);
+        }
+      }
+    }
   }
+
+  if (gv->map_file)
+    fprintf(gv->map_file,"\nLinker symbols:\n");
 
   if (gv->use_ldscript && maxls!=NULL) {
     /* put remaining absolute linker script symbols into the
        symbol list of the largest defined section: */
-    if (gv->map_file)
-      fprintf(gv->map_file,"\nLinker symbols:\n");
     while (sym = (struct Symbol *)remhead(&gv->scriptsymbols)) {
       if (!((sym->flags & (SYMF_REFERENCED|SYMF_PROVIDED))
             == SYMF_PROVIDED)) {
         sym->relsect = (struct Section *)maxls->sections.first;
         addtail(&maxls->symbols,&sym->n);
         if (gv->map_file)
-          print_symbol(gv->map_file,sym);
+          print_symbol(gv,gv->map_file,sym);
       }
     }
   }
@@ -1999,7 +2108,7 @@ void linker_relocate(struct GlobalVars *gv)
               if (rel->relocsect.lnk == ls) {
                 a = ((lword)rel->relocsect.lnk->base + rel->addend) -
                     ((lword)ls->base + rel->offset);
-                a = writesection(gv,ls->data+rel->offset,rel,a);
+                a = writesection(gv,ls->data,rel->offset,rel,a);
                 keep = FALSE;
               }
               break;
@@ -2007,7 +2116,7 @@ void linker_relocate(struct GlobalVars *gv)
             case R_SECOFF:      /* symbol's section-offset */
               if (!gv->dest_object) {
                 a = rel->addend;
-                a = writesection(gv,ls->data+rel->offset,rel,a);
+                a = writesection(gv,ls->data,rel->offset,rel,a);
                 keep = FALSE;
               }
               break;
@@ -2018,7 +2127,7 @@ void linker_relocate(struct GlobalVars *gv)
                 if (gotbase) {
                   a = (lword)rel->relocsect.lnk->base +
                       rel->addend - gotbase->value;
-                  a = writesection(gv,ls->data+rel->offset,rel,a);
+                  a = writesection(gv,ls->data,rel->offset,rel,a);
                   keep = FALSE;
                 }
                 else
@@ -2032,7 +2141,7 @@ void linker_relocate(struct GlobalVars *gv)
                 if (sdabase) {
                   a = (lword)rel->relocsect.lnk->base +
                       rel->addend - sdabase->value;
-                  a = writesection(gv,ls->data+rel->offset,rel,a);
+                  a = writesection(gv,ls->data,rel->offset,rel,a);
                   keep = FALSE;
                 }
                 else
@@ -2046,7 +2155,7 @@ void linker_relocate(struct GlobalVars *gv)
                 if (sda2base) {
                   a = (lword)rel->relocsect.lnk->base +
                       rel->addend - sda2base->value;
-                  a = writesection(gv,ls->data+rel->offset,rel,a);
+                  a = writesection(gv,ls->data,rel->offset,rel,a);
                   keep = FALSE;
                 }
                 else
@@ -2059,14 +2168,14 @@ void linker_relocate(struct GlobalVars *gv)
                 /* resolve base-relative relocation for executable file */
                 const char *secname = rel->relocsect.lnk->name;
 
-                *(ls->data+rel->offset+1) &= 0xe0;
+                *(ls->data+tbytes(gv,rel->offset)+1) &= 0xe0;
                 if (!strcmp(secname,sdata_name) ||
                     !strcmp(secname,sbss_name)) {
                   if (sdabase) {
                     a = (lword)rel->relocsect.lnk->base +
                                rel->addend - sdabase->value;
-                    *(ls->data+rel->offset+1) |= 13;
-                    a = writesection(gv,ls->data+rel->offset,rel,a);
+                    *(ls->data+tbytes(gv,rel->offset)+1) |= 13;
+                    a = writesection(gv,ls->data,rel->offset,rel,a);
                     keep = FALSE;
                   }
                   else
@@ -2077,8 +2186,8 @@ void linker_relocate(struct GlobalVars *gv)
                   if (sda2base) {
                     a = (lword)rel->relocsect.lnk->base +
                                rel->addend - sda2base->value;
-                    *(ls->data+rel->offset+1) |= 2;
-                    a = writesection(gv,ls->data+rel->offset,rel,a);
+                    *(ls->data+tbytes(gv,rel->offset)+1) |= 2;
+                    a = writesection(gv,ls->data,rel->offset,rel,a);
                     keep = FALSE;
                   }
                   else
@@ -2087,7 +2196,7 @@ void linker_relocate(struct GlobalVars *gv)
                 else if (!strcmp(secname,".PPC.EMB.sdata0") ||
                          !strcmp(secname,".PPC.EMB.sbss0")) {
                   a = (lword)rel->relocsect.lnk->base + rel->addend;
-                  a = writesection(gv,ls->data+rel->offset,rel,a);
+                  a = writesection(gv,ls->data,rel->offset,rel,a);
                   keep = FALSE;
                 }
                 else {
@@ -2105,7 +2214,7 @@ void linker_relocate(struct GlobalVars *gv)
                 if (r13init) {
                   a = (lword)rel->relocsect.lnk->base +
                       rel->addend - r13init->value;
-                  a = writesection(gv,ls->data+rel->offset,rel,a);
+                  a = writesection(gv,ls->data,rel->offset,rel,a);
                   keep = FALSE;
                 }
                 else
@@ -2121,7 +2230,7 @@ void linker_relocate(struct GlobalVars *gv)
                 if (datals = find_lnksec(gv,data_name,0,0,0,0)) {
                   a = (lword)rel->relocsect.lnk->base +
                       rel->addend - datals->base;
-                  a = writesection(gv,ls->data+rel->offset,rel,a);
+                  a = writesection(gv,ls->data,rel->offset,rel,a);
                   keep = FALSE;
                 }
                 else {
@@ -2144,7 +2253,7 @@ void linker_relocate(struct GlobalVars *gv)
 
           if (keep) {
             /* keep relocations which cannot be resolved in output file */
-/*@@@       writesection(gv,ls->data+rel->offset,rel,rel->addend); */
+/*@@@       writesection(gv,ls->data,rel->offset,rel,rel->addend); */
             addtail(&ls->relocs,&rel->n);
             a = 0;
           }
@@ -2153,7 +2262,8 @@ void linker_relocate(struct GlobalVars *gv)
             print_function_name(sec,rel->offset);
             error(25,getobjname(sec->obj),sec->name,rel->offset-sec->offset,
                   (int)rel->insert->bsiz,reloc_name[rel->rtype],
-                  rel->relocsect.lnk->name,rel->addend,a);
+                  rel->relocsect.lnk->name,
+                  (unsigned long long)rel->addend,(unsigned long long)a);
           }
         }
 
@@ -2277,12 +2387,12 @@ void linker_relocate(struct GlobalVars *gv)
                     if (!gv->dest_object) {
                       const char *secname = xdef->relsect->lnksec->name;
 
-                      *(ls->data+xref->offset+1) &= 0xe0;
+                      *(ls->data+tbytes(gv,xref->offset)+1) &= 0xe0;
                       if (!strcmp(secname,sdata_name) ||
                           !strcmp(secname,sbss_name)) {
                         if (sdabase) {
                           a = xdef->value + xref->addend - sdabase->value;
-                          *(ls->data+xref->offset+1) |= 13;
+                          *(ls->data+tbytes(gv,xref->offset)+1) |= 13;
                         }
                         else
                           undef_sym_error(sec,xref,sdabase_name);
@@ -2291,7 +2401,7 @@ void linker_relocate(struct GlobalVars *gv)
                                !strcmp(secname,sbss2_name)) {
                         if (sda2base) {
                           a = xdef->value + xref->addend - sda2base->value;
-                          *(ls->data+xref->offset+1) |= 2;
+                          *(ls->data+tbytes(gv,xref->offset)+1) |= 2;
                         }
                         else
                           undef_sym_error(sec,xref,sda2base_name);
@@ -2367,12 +2477,14 @@ void linker_relocate(struct GlobalVars *gv)
               addtail(&ls->relocs,&xref->n);
             }
             else {
-              if (a = writesection(gv,ls->data+xref->offset,xref,a)) {
+              if (a = writesection(gv,ls->data,xref->offset,xref,a)) {
                 /* value of referenced symbol is out of range! */
                 print_function_name(sec,xref->offset);
                 error(err_no,getobjname(sec->obj),sec->name,
-                      xref->offset-sec->offset,xdef->name,xdef->value,
-                      xref->addend,a,(int)xref->insert->bsiz);
+                      (unsigned long long)xref->offset-sec->offset,
+                      xdef->name,(unsigned long long)xdef->value,
+                      (unsigned long long)xref->addend,
+                      (unsigned long long)a,(int)xref->insert->bsiz);
               }
             }
           }
@@ -2390,55 +2502,7 @@ void linker_relocate(struct GlobalVars *gv)
 
 void linker_write(struct GlobalVars *gv)
 {
-  struct LinkedSection *ls = (struct LinkedSection *)gv->lnksec.first;
-  struct LinkedSection *firstls=NULL,*nextls;
   FILE *f;
-
-#if OBSOLETE /* replaced by gc_sects and linker_delunused() */
-  /* remove empty sections without referenced symbols and relocs */
-  gv->nsecs = 0;
-  while (nextls = (struct LinkedSection *)ls->n.next) {
-    if (firstls == NULL)
-      firstls = ls;
-
-    if (ls->size==0 && listempty(&ls->relocs)
-        && !(ls->ld_flags & LSF_PRESERVE)) {
-      struct Symbol *sym;
-      int keep = 0;
-
-      for (sym=(struct Symbol *)ls->symbols.first;
-           sym->n.next!=NULL; sym=(struct Symbol *)sym->n.next) {
-        if (!discard_symbol(gv,sym) ||
-            (sym->type!=SYM_ABS && (sym->flags & SYMF_REFERENCED)!=0))
-          keep = 1;
-      }
-      if (!keep) {
-        remnode(&ls->n);
-        if (ls == firstls)
-          firstls = NULL;
-        ls = nextls;
-        continue;
-      }
-      else if (ls!=firstls && is_common_ls(gv,ls)) {
-        /* @@@ Attention! This is a big HACK!
-           For the future it should be desirable to have a separate
-           list for common symbols, instead of just putting them into
-           the symbol list of the first section... @@@ */
-        struct Symbol *sym;
-
-        while (sym = (struct Symbol *)remhead(&ls->symbols)) {
-          addtail(&firstls->symbols,&sym->n);
-        }
-        remnode(&ls->n);
-        ls = nextls;
-        continue;
-      }
-    }
-
-    ls->index = gv->nsecs++;  /* reindex remaining sections */
-    ls = nextls;
-  }
-#endif /* OBSOLETE */
 
   if (!gv->errflag) {  /* no error? */
     if (gv->trace_file) {
@@ -2452,7 +2516,7 @@ void linker_write(struct GlobalVars *gv)
     }
 
     /* create output file */
-    if (!gv->output_sections) {
+    if (!gv->output_sections && !(fff[gv->dest_format]->flags&FFF_NOFILE)) {
       if ((f = fopen(gv->dest_name,"wb")) == NULL) {
         error(29,gv->dest_name);  /* Can't create output file */
         return;
@@ -2460,7 +2524,7 @@ void linker_write(struct GlobalVars *gv)
     }
     else {
       f = NULL;
-      if (!(fff[gv->dest_format]->flags & FFF_SECTOUT)) {
+      if (gv->output_sections && !(fff[gv->dest_format]->flags&FFF_SECTOUT)) {
         error(29,"with sections");  /* Can't create output file with sect. */
         return;
       }

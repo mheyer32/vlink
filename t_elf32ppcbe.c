@@ -15,7 +15,7 @@
 
 #define SBSS_MAXSIZE (4)  /* objects up to 4 bytes into .sbss */
 
-static int ppc32be_identify(char *,uint8_t *,unsigned long,bool);
+static int ppc32be_identify(struct GlobalVars *,char *,uint8_t *,unsigned long,bool);
 static void ppc32be_readconv(struct GlobalVars *,struct LinkFile *);
 
 #if defined(ELF32_PPC_BE) || defined(ELF32_AMIGA)
@@ -27,6 +27,7 @@ static void ppc32be_writeexec(struct GlobalVars *,FILE *);
 
 struct FFFuncs fff_elf32ppcbe = {
   "elf32ppcbe",
+  NULL,
   NULL,
   NULL,
   NULL,
@@ -51,7 +52,7 @@ struct FFFuncs fff_elf32ppcbe = {
   0,
   RTAB_ADDEND,RTAB_ADDEND,
   _BIG_ENDIAN_,
-  32
+  32,2
 };
 #endif
 
@@ -68,6 +69,7 @@ static void morphos_writeexec(struct GlobalVars *,FILE *);
 
 struct FFFuncs fff_elf32powerup = {
   "elf32powerup",
+  NULL,
   NULL,
   NULL,
   NULL,
@@ -90,12 +92,13 @@ struct FFFuncs fff_elf32powerup = {
   0,
   RTAB_ADDEND,RTAB_ADDEND,
   _BIG_ENDIAN_,
-  32,
+  32,2,
   FFF_RELOCATABLE|FFF_PSEUDO_DYNLINK
 };
 
 struct FFFuncs fff_elf32morphos = {
   "elf32morphos",
+  NULL,
   NULL,
   NULL,
   NULL,
@@ -118,12 +121,13 @@ struct FFFuncs fff_elf32morphos = {
   0,
   RTAB_ADDEND,RTAB_ADDEND,
   _BIG_ENDIAN_,
-  32,
+  32,2,
   FFF_RELOCATABLE
 };
 
 struct FFFuncs fff_elf32amigaos = {
   "elf32amigaos",
+  NULL,
   NULL,
   NULL,
   NULL,
@@ -148,7 +152,7 @@ struct FFFuncs fff_elf32amigaos = {
   0,
   RTAB_ADDEND,RTAB_ADDEND,
   _BIG_ENDIAN_,
-  32,
+  32,2,
   FFF_DYN_RESOLVE_ALL
 };
 
@@ -176,7 +180,8 @@ static char ddrelocs_name[] = "ddrelocs";
 /*****************************************************************/
 
 
-static int ppc32be_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int ppc32be_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                            unsigned long plen,bool lib)
 /* identify ELF-PPC-32Bit-BigEndian */
 {
   int id;
