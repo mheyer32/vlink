@@ -4,7 +4,7 @@ TARGET = vlink
 DIR = objects
 MD = mkdir
 
-CC = gcc
+CC = cc
 CCOUT = -o $(DUMMYVARIABLE)	# produces the string "-o "
 COPTS = -std=c99 -Wpedantic -O2 -fomit-frame-pointer -c
 CONFIG =
